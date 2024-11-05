@@ -20,6 +20,9 @@ from azure.ai.client.models import (
     ThreadMessage,
     ThreadRun,
     RunStep,
+    FileSearchTool,
+    AsyncToolSet,
+    FilePurpose
 )
 
 
@@ -27,8 +30,8 @@ bp = Blueprint("chat", __name__, template_folder="templates", static_folder="sta
 
 # Assuming your files are stored in the 'files' directory at the project root
 file_id_map = {
-    "product_info_1.md": "product_info_1.md",
-    "product_info_2.md": "product_info_2.md",
+    "product_info_1.md": "C:\\src\\azureai-assistant-tool\\samples\\FileSearch\\src\\files\\product_info_1.md",
+    "product_info_2.md": "C:\\src\\azureai-assistant-tool\\samples\\FileSearch\\src\\files\\product_info_2.md",
 }
 
 user_queues = {}
@@ -37,20 +40,21 @@ class MyEventHandler(AgentEventHandler):
     def __init__(self, message_queue):
         super().__init__()
         self.message_queue = message_queue
+        self.accumulated_text = ""
             
     async def on_message_delta(self, delta: "MessageDeltaChunk") -> None:
         for content_part in delta.delta.content:
             if isinstance(content_part, MessageDeltaTextContent):
                 text_value = content_part.text.value if content_part.text else "No text"
                 print(f"Text delta received: {text_value}")
+                self.accumulated_text += text_value
                 await self.message_queue.put(("message", text_value))
                 
 
     async def on_thread_message(self, message: "ThreadMessage") -> None:
         print(f"ThreadMessage created. ID: {message.id}, Status: {message.status}")
-        # if (message.status == "completed"):
-        #     await self.message_queue.put(("completed_message", ""))
-        # return
+        if (message.status == "completed"):
+            await self.message_queue.put(("completed_message", self.accumulated_text))
 
     async def on_thread_run(self, run: "ThreadRun") -> None:
         print(f"ThreadRun status: {run.status}")
@@ -96,9 +100,18 @@ async def configure_assistant_client():
         conn_str=os.environ["PROJECT_CONNECTION_STRING"],
     )
 
+    file1 = await ai_client.agents.upload_file_and_poll(file_path="C:\\src\\azureai-assistant-tool\\samples\\FileSearch\\src\\files\\product_info_1.md", purpose=FilePurpose.AGENTS)
+    file2 = await ai_client.agents.upload_file_and_poll(file_path="C:\\src\\azureai-assistant-tool\\samples\\FileSearch\\src\\files\\product_info_2.md", purpose=FilePurpose.AGENTS)
+    
+    vector_store = await ai_client.agents.create_vector_store(file_ids=[file1.id, file2.id], name="sample_store")
 
+    file_search_tool = FileSearchTool(vector_store_ids=[vector_store.id])
+    
+    tool_set = AsyncToolSet()
+    tool_set.add(file_search_tool)
+    
     agent = await ai_client.agents.create_agent(
-        model="gpt-4-1106-preview", name="my-assistant", instructions="You are helpful assistant"
+        model="gpt-4-1106-preview", name="my-assistant", instructions="You are helpful assistant", tools = tool_set.definitions, tool_resources=tool_set.resources
     )
 
     print(f"Created agent, agent ID: {agent.id}")
@@ -114,6 +127,7 @@ async def configure_assistant_client():
 
 @bp.after_app_serving
 async def shutdown_assistant_client():
+    # await bp.ai_clients.agents.delete_thread(bp.thread.id)
     await bp.ai_client.agents.delete_agent(bp.agent.id)
     await bp.ai_client.close()
 
@@ -152,7 +166,8 @@ async def fetch_document():
         return jsonify({"error": f"No file found for filename: {filename}"}), 404
 
     # Construct the full path to the file
-    full_path = os.path.join('files', file_path)
+    # full_path = os.path.join('files', file_path)
+    full_path = file_path
 
     if not os.path.exists(full_path):
         return jsonify({"error": f"File not found: {filename}"}), 404

@@ -14,12 +14,12 @@ class ChatUI {
     }
 
     preprocessContent(content) {
-        // Regular expression to find citations like [n] filename.md
-        const citationRegex = /\[(\d+)\] ([^\s]+\.md)/g;
-        return content.replace(citationRegex, (match, p1, p2) => {
-            return `<a href="#" class="file-citation" data-file-name="${p2}">[${p1}] ${p2}</a>`;
+        // Regular expression to find citations like 【n:m†filename.md】
+        const citationRegex = /【(\d+):(\d+)†([^\s]+\.md)】/g;
+        return content.replace(citationRegex, (match, p1, p2, p3) => {
+            return `<a href="#" class="file-citation" data-file-name="${p3}">[${p1}:${p2}] ${p3}</a>`;
         });
-    }
+      }
 
     addCitationClickListener() {
         document.addEventListener('click', (event) => {

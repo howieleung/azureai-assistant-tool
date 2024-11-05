@@ -3,7 +3,7 @@
 
 import logging
 import os
-
+from quart_cors import cors
 from quart import Quart
 
 
@@ -18,5 +18,5 @@ def create_app():
     from . import chat  # noqa
 
     app.register_blueprint(chat.bp)
-
+    cors(app)
     return app
