@@ -10,10 +10,10 @@ import asyncio
 import json, os
 
 import os
-from azure.ai.client.aio import AzureAIClient
+from azure.ai.projects.aio import AIProjectClient
 from azure.identity import DefaultAzureCredential
 
-from azure.ai.client.models import (
+from azure.ai.projects.models import (
     AgentEventHandler,
     MessageDeltaTextContent,
     MessageDeltaChunk,
@@ -95,10 +95,10 @@ async def read_config(assistant_name):
 async def configure_assistant_client():
     # config = await read_config("file_search")
     # client_args = {}
-    ai_client = AzureAIClient.from_connection_string(
-        credential=DefaultAzureCredential(),
-        conn_str=os.environ["PROJECT_CONNECTION_STRING"],
-    )
+    ai_client = AIProjectClient.from_connection_string(
+    credential=DefaultAzureCredential(),
+    conn_str=os.environ["PROJECT_CONNECTION_STRING"],
+)
 
     file1 = await ai_client.agents.upload_file_and_poll(file_path="C:\\src\\azureai-assistant-tool\\samples\\FileSearch\\src\\files\\product_info_1.md", purpose=FilePurpose.AGENTS)
     file2 = await ai_client.agents.upload_file_and_poll(file_path="C:\\src\\azureai-assistant-tool\\samples\\FileSearch\\src\\files\\product_info_2.md", purpose=FilePurpose.AGENTS)
