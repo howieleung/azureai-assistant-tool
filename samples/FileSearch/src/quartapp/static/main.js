@@ -14,7 +14,7 @@ function initChat() {
         e.preventDefault();
         const thread_id = await chatClient.sendMessage("/chat");
         if (thread_id) {
-            chatClient.listenToServer("/stream", thread_id);
+            chatClient.listenToServer("/stream");
         }
         chatClient.messageInput.value = "";
     });

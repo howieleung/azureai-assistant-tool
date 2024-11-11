@@ -14,7 +14,6 @@ from azure.ai.projects.aio import AIProjectClient
 from azure.identity import DefaultAzureCredential
 
 from azure.ai.projects.models import (
-    AgentEventHandler,
     MessageDeltaTextContent,
     MessageDeltaChunk,
     ThreadMessage,
@@ -22,59 +21,13 @@ from azure.ai.projects.models import (
     RunStep,
     FileSearchTool,
     AsyncToolSet,
-    FilePurpose
+    FilePurpose,
+    AgentStreamEvent
 )
 
 
 bp = Blueprint("chat", __name__, template_folder="templates", static_folder="static")
 
-# Assuming your files are stored in the 'files' directory at the project root
-file_id_map = {
-    "product_info_1.md": "C:\\src\\azureai-assistant-tool\\samples\\FileSearch\\src\\files\\product_info_1.md",
-    "product_info_2.md": "C:\\src\\azureai-assistant-tool\\samples\\FileSearch\\src\\files\\product_info_2.md",
-}
-
-user_queues = {}
-
-class MyEventHandler(AgentEventHandler):
-    def __init__(self, message_queue):
-        super().__init__()
-        self.message_queue = message_queue
-        self.accumulated_text = ""
-            
-    async def on_message_delta(self, delta: "MessageDeltaChunk") -> None:
-        for content_part in delta.delta.content:
-            if isinstance(content_part, MessageDeltaTextContent):
-                text_value = content_part.text.value if content_part.text else "No text"
-                print(f"Text delta received: {text_value}")
-                self.accumulated_text += text_value
-                await self.message_queue.put(("message", text_value))
-                
-
-    async def on_thread_message(self, message: "ThreadMessage") -> None:
-        print(f"ThreadMessage created. ID: {message.id}, Status: {message.status}")
-        if (message.status == "completed"):
-            await self.message_queue.put(("completed_message", self.accumulated_text))
-
-    async def on_thread_run(self, run: "ThreadRun") -> None:
-        print(f"ThreadRun status: {run.status}")
-
-    async def on_run_step(self, step: "RunStep") -> None:
-        print(f"RunStep type: {step.type}, Status: {step.status}")
-
-    async def on_error(self, data: str) -> None:
-        print(f"An error occurred. Data: {data}")
-
-    async def on_done(self) -> None:
-        print("Stream completed.")
-        await self.message_queue.put(("stream_end", ""))
-
-    async def on_unhandled_event(self, event_type: str, event_data: Any) -> None:
-        print(f"Unhandled Event Type: {event_type}, Data: {event_data}")
-
-
-    def on_unhandled_event(self, event_type: str, event_data: Any) -> None:
-        print(f"Unhandled Event Type: {event_type}, Data: {event_data}")
 
 async def read_config(assistant_name):
     config_path = f"config/{assistant_name}_assistant_config.yaml"
@@ -96,19 +49,25 @@ async def configure_assistant_client():
     # config = await read_config("file_search")
     # client_args = {}
     ai_client = AIProjectClient.from_connection_string(
-    credential=DefaultAzureCredential(),
-    conn_str=os.environ["PROJECT_CONNECTION_STRING"],
-)
+        credential=DefaultAzureCredential(),
+        conn_str=os.environ["PROJECT_CONNECTION_STRING"],
+    )
 
-    file1 = await ai_client.agents.upload_file_and_poll(file_path="C:\\src\\azureai-assistant-tool\\samples\\FileSearch\\src\\files\\product_info_1.md", purpose=FilePurpose.AGENTS)
-    file2 = await ai_client.agents.upload_file_and_poll(file_path="C:\\src\\azureai-assistant-tool\\samples\\FileSearch\\src\\files\\product_info_2.md", purpose=FilePurpose.AGENTS)
+    print(f"Current dir is {os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'files', 'product_info_1.md'))}")
     
-    vector_store = await ai_client.agents.create_vector_store(file_ids=[file1.id, file2.id], name="sample_store")
+    # files = ["product_info_1.md", "product_info_2.md"]
+    # file_ids =[]
+    # for file in files:
+    #     file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'files', file))
+    #     print(f"Uploading file {file_path}")
+    #     file_id = await ai_client.agents.upload_file_and_poll(file_path=file_path, purpose=FilePurpose.AGENTS)
+    
+    # vector_store = await ai_client.agents.create_vector_store(file_ids=file_ids, name="sample_store")
 
-    file_search_tool = FileSearchTool(vector_store_ids=[vector_store.id])
+    # file_search_tool = FileSearchTool(vector_store_ids=[vector_store.id])
     
     tool_set = AsyncToolSet()
-    tool_set.add(file_search_tool)
+    # tool_set.add(file_search_tool)
     
     agent = await ai_client.agents.create_agent(
         model="gpt-4-1106-preview", name="my-assistant", instructions="You are helpful assistant", tools = tool_set.definitions, tool_resources=tool_set.resources
@@ -116,18 +75,13 @@ async def configure_assistant_client():
 
     print(f"Created agent, agent ID: {agent.id}")
 
-    thread = await ai_client.agents.create_thread()
-    print(f"Created thread, thread ID {thread.id}")
     
     bp.ai_client = ai_client
     bp.agent = agent
-    bp.thread = thread
-    
-    user_queues[thread.id] = asyncio.Queue()   
+        
 
 @bp.after_app_serving
 async def shutdown_assistant_client():
-    # await bp.ai_clients.agents.delete_thread(bp.thread.id)
     await bp.ai_client.agents.delete_agent(bp.agent.id)
     await bp.ai_client.close()
 
@@ -135,22 +89,38 @@ async def shutdown_assistant_client():
 async def index():
     return await render_template("index.html")
 
+    
 @bp.post("/chat")
 async def start_chat():
+    thread_id = request.cookies.get('thread_id')
+    agent_id = request.cookies.get('agent_id')
+    thread = None
+    
+    if thread_id or agent_id != bp.agent.id:
+        # Check if the thread is still active
+        try:
+            thread = await bp.ai_client.agents.get_thread(thread_id)
+        except Exception as e:
+            current_app.logger.error(f"Failed to retrieve thread with ID {thread_id}: {e}")
+    if thread is None:
+        thread = await bp.ai_client.agents.create_thread()    
+                    
     user_message = await request.get_json()
     if not hasattr(bp, 'ai_client'):
         return jsonify({"error": "Agent is not initialized"}), 500
 
-    if not hasattr(bp, 'thread'):
-        return jsonify({"error": "Conversation thread is not initialized"}), 500
-
     message = await bp.ai_client.agents.create_message(
-        thread_id=bp.thread.id, role="user", content=user_message['message']
+        thread_id=thread.id, role="user", content=user_message['message']
     )
     print(f"Created message, message ID {message.id}")
 
 
-    return jsonify({"thread_id": bp.thread.id, "message": "Processing started"}), 200
+    response = jsonify({"thread_id": thread.id, "message": "Processing started"})
+    response.set_cookie('thread_id', thread.id)
+    response.set_cookie('agent_id', bp.agent.id)
+    
+    
+    return response, 200
 
 
 @bp.route('/fetch-document', methods=['GET'])
@@ -161,7 +131,8 @@ async def fetch_document():
         return jsonify({"error": "Filename is required"}), 400
 
     # Get the file path from the mapping
-    file_path = file_id_map.get(filename)
+    file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'files', filename))
+    
     if not file_path:
         return jsonify({"error": f"No file found for filename: {filename}"}), 404
 
@@ -184,8 +155,8 @@ def read_file(path):
     with open(path, 'r') as file:
         return file.read()
 
-@bp.route('/stream/<thread_id>', methods=['GET'])
-async def stream_responses(thread_id: str):
+@bp.route('/stream', methods=['GET'])
+async def stream_responses():
     # Set necessary headers for SSE
     headers = {
         'Cache-Control': 'no-cache',
@@ -193,51 +164,52 @@ async def stream_responses(thread_id: str):
         'Content-Type': 'text/event-stream'
     }
 
-    async with await bp.ai_client.agents.create_stream(
-        thread_id=bp.thread.id, assistant_id=bp.agent.id, event_handler=MyEventHandler(user_queues.get(bp.thread.id))
-    ) as stream:
-        await stream.until_done()
+    thread_id = request.cookies.get('thread_id')
+    agent_id = request.cookies.get('agent_id')
+    if not thread_id:
+        return jsonify({"error": "Agent ID is required"}), 400
 
     current_app.logger.info(f"Stream request received for thread ID: {thread_id}")
 
-    if thread_id != bp.thread.id:
-        current_app.logger.error(f"Invalid thread ID: {thread_id} does not match {bp.thread.id}")
-        return jsonify({"error": "Invalid thread ID"}), 404
-
-    message_queue = user_queues.get(thread_id)
-    if not message_queue:
-        current_app.logger.error(f"No active session found for thread: {thread_id}")
-        return jsonify({"error": "No active session for this thread"}), 404
-
-    current_app.logger.info(f"Starting to stream events for thread: {thread_id}")
 
     async def event_stream():
-        try:
-            while True:
-                message_type, message = await message_queue.get()
+        async with await bp.ai_client.agents.create_stream(
+            thread_id=thread_id, assistant_id=agent_id
+        ) as stream:
+            accumulated_text = ""
+            
+            async for event_type, event_data in stream:
 
-                if message_type == "message":
-                    event_data = json.dumps({'content': message, 'type': message_type})
-                    yield f"data: {event_data}\n\n"
-                elif message_type == "completed_message":
-                    event_data = json.dumps({'content': message, 'type': message_type})
-                    yield f"data: {event_data}\n\n"
-                elif message_type == "stream_end":
-                    event_data = json.dumps({'content': message, 'type': message_type})
-                    yield f"data: {event_data}\n\n"
-                    return
-                elif message_type == "function":
-                    function_message = f"Function {message} called"
-                    event_data = json.dumps({'content': function_message})
+                if isinstance(event_data, MessageDeltaChunk):
+                    for content_part in event_data.delta.content:
+                        if isinstance(content_part, MessageDeltaTextContent):
+                            text_value = content_part.text.value if content_part.text else "No text"
+                            accumulated_text += text_value
+                            print(f"Text delta received: {text_value}")
+                            event_data = json.dumps({'content': text_value, 'type': "message"})
+                            yield f"data: {event_data}\n\n"
+
+                elif isinstance(event_data, ThreadMessage):
+                    print(f"ThreadMessage created. ID: {event_data.id}, Status: {event_data.status}")
+                    if (event_data.status == "completed"):
+                        event_data = json.dumps({'content': accumulated_text, 'type': "completed_message"})
+                        yield f"data: {event_data}\n\n"
+
+                elif isinstance(event_data, ThreadRun):
+                    print(f"ThreadRun status: {event_data.status}")
+
+                elif isinstance(event_data, RunStep):
+                    print(f"RunStep type: {event_data.type}, Status: {event_data.status}")
+
+                elif event_type == AgentStreamEvent.ERROR:
+                    print(f"An error occurred. Data: {event_data}")
+
+                elif event_type == AgentStreamEvent.DONE:
+                    print("Stream completed.")
+                    event_data = json.dumps({'type': "stream_end"})
                     yield f"data: {event_data}\n\n"
 
-                message_queue.task_done()
-
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            raise
-        finally:
-            pass
+                else:
+                    print(f"Unhandled Event Type: {event_type}, Data: {event_data}")
 
     return Response(event_stream(), headers=headers)

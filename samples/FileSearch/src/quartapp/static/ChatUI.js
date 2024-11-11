@@ -130,7 +130,8 @@ class ChatUI {
     
             // Set the innerHTML of the message text div to the HTML content
             messageTextDiv.innerHTML = htmlContent;
-   
+            console.log("HTML set to messageTextDiv:", messageTextDiv.innerHTML);
+            
             // Use requestAnimationFrame to ensure the DOM has updated before scrolling
             // Only scroll if not streaming
             if (!isStreaming) {

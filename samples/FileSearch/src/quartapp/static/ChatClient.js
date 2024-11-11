@@ -24,9 +24,9 @@ class ChatClient {
         return data.thread_id;
     }
 
-    listenToServer(url, threadID) {
+    listenToServer(url) {
         if (!this.eventSource || this.eventSource.readyState === EventSource.CLOSED) {
-            this.eventSource = new EventSource(`${url}/${threadID}`);
+            this.eventSource = new EventSource(url);
             this.handleMessages();
         }
     }
