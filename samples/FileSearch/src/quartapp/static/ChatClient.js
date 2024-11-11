@@ -4,79 +4,94 @@
 class ChatClient {
     constructor(ui) {
         this.ui = ui;
-        this.messageInput = document.getElementById("message");
-        this.eventSource = null;
     }
 
-    async sendMessage(url) {
-        const message = this.messageInput.value.trim();
+    async sendMessage(url, message) {
         if (!message) return false;
 
         this.ui.appendUserMessage(message);
 
-        const response = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message })
-        });
+        let postData = {message: message};
 
-        const data = await response.json();
-        return data.thread_id;
-    }
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(postData)
+            });
 
-    listenToServer(url) {
-        if (!this.eventSource || this.eventSource.readyState === EventSource.CLOSED) {
-            this.eventSource = new EventSource(url);
-            this.handleMessages();
+            if (!response.body) {
+                throw new Error('ReadableStream not supported');
+            }
+
+            this.handleMessages(response.body);
+        } catch (error) {
+            console.error('Fetch failed:', error);
         }
-    }
-
-    handleMessages() {
+}
+    
+    handleMessages(stream) {
         let messageDiv = null;
         let accumulatedContent = '';
         let isStreaming = true;
-
-        this.eventSource.onmessage = event => {
-            const data = JSON.parse(event.data);
-
-            if (data.type === "stream_end") {
-                this.eventSource.close();
-                messageDiv = null;
-                accumulatedContent = '';
-            } else {
-                if (!messageDiv) {
-                    messageDiv = this.ui.createAssistantMessageDiv();
-                    if (!messageDiv) {
-                        console.error("Failed to create message div.");
+        let buffer = '';
+    
+        const reader = stream.getReader();
+        const decoder = new TextDecoder();
+    
+        const readStream = async () => {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) {
+                    break;
+                }
+    
+                buffer += decoder.decode(value, { stream: true });
+    
+                let boundary = buffer.indexOf('\n');
+                while (boundary !== -1) {
+                    const chunk = buffer.slice(0, boundary).trim();
+                    buffer = buffer.slice(boundary + 1);
+    
+                    if (chunk.startsWith('data: ')) {
+                        const data = JSON.parse(chunk.slice(6));
+    
+                        if (data.type === "stream_end") {
+                            reader.releaseLock();
+                            messageDiv = null;
+                            accumulatedContent = '';
+                        } else {
+                            if (!messageDiv) {
+                                messageDiv = this.ui.createAssistantMessageDiv();
+                                if (!messageDiv) {
+                                    console.error("Failed to create message div.");
+                                }
+                            }
+    
+                            if (data.type === "completed_message") {
+                                this.ui.clearAssistantMessage(messageDiv);
+                                accumulatedContent = data.content;
+                                isStreaming = false;
+                            } else {
+                                accumulatedContent += data.content;
+                            }
+    
+                            this.ui.appendAssistantMessage(messageDiv, accumulatedContent, isStreaming);
+                        }
                     }
+    
+                    boundary = buffer.indexOf('\n');
                 }
-
-                // Check if it's a completed message
-                if (data.type === "completed_message") {
-                    //console.log("Received completed message:", data.content);
-                    // Replace the accumulated content with the completed message
-                    this.ui.clearAssistantMessage(messageDiv);
-                    accumulatedContent = data.content;
-                    isStreaming = false;
-                } else {
-                    //console.log("Received partial message:", data.content);
-                    // Append the partial message to the accumulated content
-                    accumulatedContent += data.content;
-                }
-
-                this.ui.appendAssistantMessage(messageDiv, accumulatedContent, isStreaming);
             }
         };
-
-        this.eventSource.onerror = error => {
-            console.error("EventSource failed:", error);
-            this.eventSource.close();
-        };
+    
+        readStream().catch(error => {
+            console.error('Stream reading failed:', error);
+        });
     }
 
-    closeEventSource() {
-        if (this.eventSource) this.eventSource.close();
-    }
 }
 
 export default ChatClient;

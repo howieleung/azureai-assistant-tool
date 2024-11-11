@@ -90,8 +90,8 @@ async def index():
     return await render_template("index.html")
 
     
-@bp.post("/chat")
-async def start_chat():
+@bp.route('/chat', methods=['POST'])
+async def chat():
     thread_id = request.cookies.get('thread_id')
     agent_id = request.cookies.get('agent_id')
     thread = None
@@ -105,7 +105,10 @@ async def start_chat():
     if thread is None:
         thread = await bp.ai_client.agents.create_thread()    
                     
+    thread_id = thread.id
+    agent_id = bp.agent.id    
     user_message = await request.get_json()
+
     if not hasattr(bp, 'ai_client'):
         return jsonify({"error": "Agent is not initialized"}), 500
 
@@ -115,13 +118,59 @@ async def start_chat():
     print(f"Created message, message ID {message.id}")
 
 
-    response = jsonify({"thread_id": thread.id, "message": "Processing started"})
+    # Set necessary headers for SSE
+    headers = {
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Content-Type': 'text/event-stream'
+    }
+
+
+    async def event_stream():
+        async with await bp.ai_client.agents.create_stream(
+            thread_id=thread_id, assistant_id=agent_id
+        ) as stream:
+            accumulated_text = ""
+            
+            async for event_type, event_data in stream:
+
+                if isinstance(event_data, MessageDeltaChunk):
+                    for content_part in event_data.delta.content:
+                        if isinstance(content_part, MessageDeltaTextContent):
+                            text_value = content_part.text.value if content_part.text else "No text"
+                            accumulated_text += text_value
+                            print(f"Text delta received: {text_value}")
+                            event_data = json.dumps({'content': text_value, 'type': "message"})
+                            yield f"data: {event_data}\n\n"
+
+                elif isinstance(event_data, ThreadMessage):
+                    print(f"ThreadMessage created. ID: {event_data.id}, Status: {event_data.status}")
+                    if (event_data.status == "completed"):
+                        event_data = json.dumps({'content': accumulated_text, 'type': "completed_message"})
+                        yield f"data: {event_data}\n\n"
+
+                elif isinstance(event_data, ThreadRun):
+                    print(f"ThreadRun status: {event_data.status}")
+
+                elif isinstance(event_data, RunStep):
+                    print(f"RunStep type: {event_data.type}, Status: {event_data.status}")
+
+                elif event_type == AgentStreamEvent.ERROR:
+                    print(f"An error occurred. Data: {event_data}")
+
+                elif event_type == AgentStreamEvent.DONE:
+                    print("Stream completed.")
+                    event_data = json.dumps({'type': "stream_end"})
+                    yield f"data: {event_data}\n\n"
+
+                else:
+                    print(f"Unhandled Event Type: {event_type}, Data: {event_data}")
+
+    response = Response(event_stream(), headers=headers)
     response.set_cookie('thread_id', thread.id)
     response.set_cookie('agent_id', bp.agent.id)
     
-    
-    return response, 200
-
+    return response
 
 @bp.route('/fetch-document', methods=['GET'])
 async def fetch_document():

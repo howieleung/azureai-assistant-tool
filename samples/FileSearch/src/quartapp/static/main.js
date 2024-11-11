@@ -10,13 +10,13 @@ function initChat() {
 
     const form = document.getElementById("chat-form");
 
+    const messageInput = document.getElementById("message");
+
+
     form.addEventListener("submit", async function(e) {
         e.preventDefault();
-        const thread_id = await chatClient.sendMessage("/chat");
-        if (thread_id) {
-            chatClient.listenToServer("/stream");
-        }
-        chatClient.messageInput.value = "";
+        await chatClient.sendMessage("/chat", messageInput.value.trim());
+        messageInput.value = "";
     });
 
     window.onbeforeunload = function() {
